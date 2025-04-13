@@ -6,6 +6,17 @@ const { exportToCsv } = require("../utils/exportCsv");
 exports.getTodos = async (req, res, next) => {
   try {
     const { userId, page = 1, limit = 10, priority, tags, search } = req.query;
+    
+    if (!userId) {
+      return res.status(400).json({
+        error: {
+          code: "MISSING_USER_ID",
+          message: "User ID is required",
+          details: "Please provide a valid user ID in the query parameters"
+        }
+      });
+    }
+
     const query = { userId };
 
     if (priority) query.priority = { $in: priority.split(",") };
@@ -24,10 +35,18 @@ exports.getTodos = async (req, res, next) => {
       .sort({ createdAt: -1 });
 
     const total = await Todo.countDocuments(query);
-    res.json({
-      todos,
-      totalPages: Math.ceil(total / limit),
-      currentPage: Number(page)
+
+    res.status(200).json({
+      message: "Todos retrieved successfully",
+      data: {
+        todos,
+        pagination: {
+          total,
+          totalPages: Math.ceil(total / limit),
+          currentPage: Number(page),
+          limit: Number(limit)
+        }
+      }
     });
   } catch (error) {
     next(error);
@@ -37,9 +56,24 @@ exports.getTodos = async (req, res, next) => {
 // Get a specific todo
 exports.getTodo = async (req, res, next) => {
   try {
-    const todo = await Todo.findById(req.params.id);
-    if (!todo) return res.status(404).json({ message: "Todo not found" });
-    res.json(todo);
+    const todo = await Todo.findById(req.params.id)
+      .populate("assignedUsers", "username name")
+      .populate("notes.user", "username name");
+
+    if (!todo) {
+      return res.status(404).json({
+        error: {
+          code: "TODO_NOT_FOUND",
+          message: "Todo not found",
+          details: `No todo found with ID: ${req.params.id}`
+        }
+      });
+    }
+
+    res.status(200).json({
+      message: "Todo retrieved successfully",
+      todo
+    });
   } catch (error) {
     next(error);
   }
@@ -58,29 +92,37 @@ exports.createTodo = async (req, res, next) => {
     } = req.body;
 
     if (!title) {
-      return res.status(400).json({ message: "Title is required" });
+      return res.status(400).json({
+        error: {
+          code: "MISSING_TITLE",
+          message: "Title is required",
+          details: "Please provide a title for the todo"
+        }
+      });
     }
 
     if (!userId) {
-      return res.status(400).json({ message: "User ID is required" });
+      return res.status(400).json({
+        error: {
+          code: "MISSING_USER_ID",
+          message: "User ID is required",
+          details: "Please provide a valid user ID"
+        }
+      });
     }
 
     // Validate assigned users
-    try {
-      if (assignedUsers && assignedUsers.length > 0) {
-        const users = await User.find({ _id: { $in: assignedUsers } });
-        if (users.length !== assignedUsers.length) {
-          return res
-            .status(400)
-            .json({ message: "One or more assigned users do not exist" });
-        }
+    if (assignedUsers && assignedUsers.length > 0) {
+      const users = await User.find({ _id: { $in: assignedUsers } });
+      if (users.length !== assignedUsers.length) {
+        return res.status(400).json({
+          error: {
+            code: "INVALID_ASSIGNED_USERS",
+            message: "One or more assigned users do not exist",
+            details: "Please provide valid user IDs"
+          }
+        });
       }
-    } catch (error) {
-      console.log("error", error);
-      return res.status(400).json({
-        message:
-          "Error validating assigned users. One or more assigned users do not exist"
-      });
     }
 
     const todo = new Todo({
@@ -91,13 +133,13 @@ exports.createTodo = async (req, res, next) => {
       assignedUsers,
       userId
     });
+
     await todo.save();
-    // Populate the assignedUsers field
-    const populatedTodo = await Todo.findById(todo._id).populate(
-      "assignedUsers",
-      "username name"
-    );
-    console.log("populatedTodo", populatedTodo);
+    
+    const populatedTodo = await Todo.findById(todo._id)
+      .populate("assignedUsers", "username name")
+      .populate("notes.user", "username name");
+
     res.status(201).json({
       message: "Todo created successfully",
       todo: populatedTodo
@@ -121,13 +163,15 @@ exports.updateTodo = async (req, res, next) => {
 
     // Validate assigned users
     if (assignedUsers && assignedUsers.length > 0) {
-      const users = await User.find({
-        _id: { $in: assignedUsers }
-      });
+      const users = await User.find({ _id: { $in: assignedUsers } });
       if (users.length !== assignedUsers.length) {
-        return res
-          .status(400)
-          .json({ message: "One or more assigned users do not exist" });
+        return res.status(400).json({
+          error: {
+            code: "INVALID_ASSIGNED_USERS",
+            message: "One or more assigned users do not exist",
+            details: "Please provide valid user IDs"
+          }
+        });
       }
     }
 
@@ -143,10 +187,24 @@ exports.updateTodo = async (req, res, next) => {
         updatedAt: Date.now()
       },
       { new: true }
-    ).populate("assignedUsers", "username name");
+    )
+    .populate("assignedUsers", "username name")
+    .populate("notes.user", "username name");
 
-    if (!todo) return res.status(404).json({ message: "Todo not found" });
-    res.json(todo);
+    if (!todo) {
+      return res.status(404).json({
+        error: {
+          code: "TODO_NOT_FOUND",
+          message: "Todo not found",
+          details: `No todo found with ID: ${req.params.id}`
+        }
+      });
+    }
+
+    res.status(200).json({
+      message: "Todo updated successfully",
+      todo
+    });
   } catch (error) {
     next(error);
   }
@@ -156,8 +214,21 @@ exports.updateTodo = async (req, res, next) => {
 exports.deleteTodo = async (req, res, next) => {
   try {
     const todo = await Todo.findByIdAndDelete(req.params.id);
-    if (!todo) return res.status(404).json({ message: "Todo not found" });
-    res.json({ message: "Todo deleted" });
+    
+    if (!todo) {
+      return res.status(404).json({
+        error: {
+          code: "TODO_NOT_FOUND",
+          message: "Todo not found",
+          details: `No todo found with ID: ${req.params.id}`
+        }
+      });
+    }
+
+    res.status(200).json({
+      message: "Todo deleted successfully",
+      todoId: req.params.id
+    });
   } catch (error) {
     next(error);
   }
@@ -166,16 +237,51 @@ exports.deleteTodo = async (req, res, next) => {
 // Add a note to a todo
 exports.addNote = async (req, res, next) => {
   try {
-    const { content } = req.body;
-    const todo = await Todo.findById(req.params.id).populate(
-      "assignedUsers",
-      "username name"
-    );
-    if (!todo) return res.status(404).json({ message: "Todo not found" });
+    const { content, userId } = req.body;
 
-    todo.notes.push({ content });
+    if (!content) {
+      return res.status(400).json({
+        error: {
+          code: "MISSING_NOTE_CONTENT",
+          message: "Note content is required",
+          details: "Please provide content for the note"
+        }
+      });
+    }
+
+    if (!userId) {
+      return res.status(400).json({
+        error: {
+          code: "MISSING_USER_ID",
+          message: "User ID is required",
+          details: "Please provide a valid user ID"
+        }
+      });
+    }
+
+    const todo = await Todo.findById(req.params.id);
+    
+    if (!todo) {
+      return res.status(404).json({
+        error: {
+          code: "TODO_NOT_FOUND",
+          message: "Todo not found",
+          details: `No todo found with ID: ${req.params.id}`
+        }
+      });
+    }
+
+    todo.notes.push({ content, user: userId });
     await todo.save();
-    res.json(todo);
+
+    const updatedTodo = await Todo.findById(req.params.id)
+      .populate("assignedUsers", "username name")
+      .populate("notes.user", "username name");
+
+    res.status(201).json({
+      message: "Note added successfully",
+      todo: updatedTodo
+    });
   } catch (error) {
     next(error);
   }
@@ -185,12 +291,30 @@ exports.addNote = async (req, res, next) => {
 exports.exportTodos = async (req, res, next) => {
   try {
     const { userId } = req.query;
+
+    if (!userId) {
+      return res.status(400).json({
+        error: {
+          code: "MISSING_USER_ID",
+          message: "User ID is required",
+          details: "Please provide a valid user ID in the query parameters"
+        }
+      });
+    }
+
     const todos = await Todo.find({ userId });
+    
+    if (!todos || todos.length === 0) {
+      return res.status(200).json({
+        message: "No todos found to export",
+        data: []
+      });
+    }
 
     const csv = exportToCsv(todos);
     res.header("Content-Type", "text/csv");
     res.attachment("todos.csv");
-    res.send(csv);
+    res.status(200).send(csv);
   } catch (error) {
     next(error);
   }
@@ -200,8 +324,23 @@ exports.exportTodos = async (req, res, next) => {
 exports.getTags = async (req, res, next) => {
   try {
     const { userId } = req.query;
+
+    if (!userId) {
+      return res.status(400).json({
+        error: {
+          code: "MISSING_USER_ID",
+          message: "User ID is required",
+          details: "Please provide a valid user ID in the query parameters"
+        }
+      });
+    }
+
     const tags = await Todo.distinct("tags", { userId });
-    res.json(tags);
+    
+    res.status(200).json({
+      message: "Tags retrieved successfully",
+      tags: tags || []
+    });
   } catch (error) {
     next(error);
   }
